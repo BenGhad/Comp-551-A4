@@ -10,7 +10,7 @@
 int main() {
     torch::manual_seed(42);
 
-    auto data = agnews::load_ag_news("../data/raw/train.csv", "../data/raw/test.csv", 0.9, 42);
+    auto data = agnews::load_ag_news("data/raw/train.csv", "data/raw/test.csv", 0.9, 42);
 
     agnews::Tokenizer tokenizer;
     std::vector<std::vector<std::string>> train_tokens;

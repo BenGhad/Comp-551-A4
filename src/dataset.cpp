@@ -1,14 +1,37 @@
 #include "dataset.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 namespace agnews {
 namespace {
+    namespace fs = std::filesystem;
+
+    fs::path resolve_csv_path(const std::string& csv_path) {
+        const fs::path requested(csv_path);
+        if (requested.is_absolute() && fs::exists(requested)) {
+            return requested;
+        }
+
+        const fs::path cwd_candidate = fs::current_path() / requested;
+        if (fs::exists(cwd_candidate)) {
+            return cwd_candidate;
+        }
+
+        const fs::path source_candidate = fs::path(CMAKE_SOURCE_DIR) / requested;
+        if (fs::exists(source_candidate)) {
+            return source_candidate;
+        }
+
+        return requested;
+    }
+
     // label+1,"title","description"
 
     std::vector<std::string> parse_csv_line(const std::string& line) {
@@ -59,9 +82,14 @@ size_t PaddedBatch::max_seq_len() const {
 }
 
 std::vector<Example> read_ag_news_csv(const std::string& csv_path) {
-    std::ifstream fin(csv_path);
+    const fs::path resolved_path = resolve_csv_path(csv_path);
+    std::ifstream fin(resolved_path);
     if (!fin.is_open()) {
-        throw std::runtime_error("Failed to open file: " + csv_path);
+        std::ostringstream message;
+        message << "Failed to open file: " << csv_path
+                << " (cwd: " << fs::current_path().string()
+                << ", tried: " << resolved_path.string() << ")";
+        throw std::runtime_error(message.str());
     }
 
     std::vector<Example> examples;
@@ -74,7 +102,7 @@ std::vector<Example> read_ag_news_csv(const std::string& csv_path) {
 
         auto fields = parse_csv_line(line);
         if (fields.size() != 3) {
-            throw std::runtime_error("Malformed CSV line in " + csv_path + ": " + line);
+            throw std::runtime_error("Malformed CSV line in " + resolved_path.string() + ": " + line);
         }
 
         int raw_label = std::stoi(fields[0]);
