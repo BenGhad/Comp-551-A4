@@ -56,7 +56,6 @@ namespace agnews {
             torch::Tensor lengths;
             torch::Tensor labels;
             std::vector<size_t> example_indices;
-            int64_t size = 0;
         };
 
 
@@ -66,8 +65,24 @@ namespace agnews {
                                        const size_t batch_size,
                                        const size_t max_sequence_length,
                                        torch::Device device) {
+            if (batch_size == 0) {
+                throw std::runtime_error("batch_size must be positive.");
+            }
+            if (start >= order.size()) {
+                throw std::runtime_error("Batch start index is outside the dataset order.");
+            }
+
             const size_t end = std::min(order.size(), start + batch_size);
             std::vector batch_indices(order.begin() + start, order.begin() + end);
+            if (batch_indices.empty()) {
+                std::ostringstream message;
+                message << "build_tensor_batch produced no examples "
+                        << "(start=" << start
+                        << ", end=" << end
+                        << ", order_size=" << order.size()
+                        << ", batch_size=" << batch_size << ").";
+                throw std::runtime_error(message.str());
+            }
 
             std::ranges::sort(batch_indices,
                               [&](size_t a, size_t b) {
@@ -104,8 +119,7 @@ namespace agnews {
                 input_ids.to(device),
                 lengths.to(device),
                 labels.to(device),
-                std::move(batch_indices),
-                static_cast<int64_t>(batch_indices.size())
+                std::move(batch_indices)
             };
         }
 
@@ -135,6 +149,12 @@ namespace agnews {
             if (examples.empty()) {
                 throw std::runtime_error("Cannot run training or evaluation on an empty dataset.");
             }
+            if (config.batch_size == 0) {
+                throw std::runtime_error("batch_size must be positive.");
+            }
+            if (config.max_sequence_length == 0) {
+                throw std::runtime_error("max_sequence_length must be positive.");
+            }
 
             const bool training = optimizer != nullptr;
             if (training && predicted_labels != nullptr) {
@@ -162,6 +182,29 @@ namespace agnews {
 
             for (size_t start = 0; start < order.size(); start += config.batch_size) {
                 auto batch = build_tensor_batch(examples, order, start, config.batch_size, config.max_sequence_length, device);
+                const auto batch_examples = static_cast<int64_t>(batch.example_indices.size());
+                if (batch_examples <= 0) {
+                    throw std::runtime_error("Encountered an empty tensor batch.");
+                }
+                if (batch.input_ids.size(0) != batch_examples ||
+                    batch.lengths.size(0) != batch_examples ||
+                    batch.labels.size(0) != batch_examples) {
+                    throw std::runtime_error("Tensor batch components have inconsistent batch sizes.");
+                }
+                if (batch.input_ids.size(1) <= 0) {
+                    throw std::runtime_error("Encountered a batch with zero padded sequence length.");
+                }
+                const auto batch_labels = batch.labels.to(torch::kCPU);
+                const auto min_label = batch_labels.min().item<int64_t>();
+                const auto max_label = batch_labels.max().item<int64_t>();
+                const auto num_classes = static_cast<int64_t>(model->config().num_classes);
+                if (min_label < 0 || max_label >= num_classes) {
+                    std::ostringstream message;
+                    message << "Label out of range for cross-entropy: expected [0, "
+                            << (num_classes - 1) << "], got [" << min_label
+                            << ", " << max_label << "].";
+                    throw std::runtime_error(message.str());
+                }
 
 
                 if (training) {
@@ -191,13 +234,18 @@ namespace agnews {
                     }
                 }
                 total_correct += predictions.eq(batch.labels).sum().item<int64_t>();
-                total_loss += loss.item<double>() * static_cast<double>(batch.size);
-                total_examples += batch.size;
+                total_loss += loss.item<double>() * static_cast<double>(batch_examples);
+                total_examples += batch_examples;
+            }
+            if (total_examples <= 0) {
+                throw std::runtime_error("No examples were processed in the epoch.");
             }
 
             DatasetMetrics metrics;
             metrics.loss = total_loss / static_cast<double>(total_examples);
             metrics.accuracy = static_cast<double>(total_correct) / static_cast<double>(total_examples);
+            require_finite_scalar(metrics.loss, "dataset loss", training, order.size());
+            require_finite_scalar(metrics.accuracy, "dataset accuracy", training, order.size());
             return metrics;
         }
 

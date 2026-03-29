@@ -17,7 +17,7 @@ enum class PoolingStrategy {
 struct ModelConfig {
     size_t vocab_size = 0;
     size_t embedding_dim = 128;
-    size_t hidden_size = 256;
+    size_t hidden_size = 64;
     int num_layers = 1;
     double dropout = 0.2;
     bool bidirectional = false;

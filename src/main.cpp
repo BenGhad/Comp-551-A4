@@ -4,11 +4,18 @@
 #include "trainer.h"
 #include "vocab.h"
 
+#include <ATen/Context.h>
 #include <iomanip>
 #include <iostream>
 
 int main() {
     torch::manual_seed(42);
+
+    const torch::Device device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU);
+    if (!device.is_cuda() && at::hasMKLDNN()) {
+        at::globalContext().setUserEnabledMkldnn(false);
+        std::cout << "MKLDNN: disabled on CPU for LSTM stability" << std::endl;
+    }
 
     auto data = agnews::load_ag_news("data/raw/train.csv", "data/raw/test.csv", 0.9, 42);
 
@@ -42,7 +49,6 @@ int main() {
         vocab,
         experiment.training.max_sequence_length);
 
-    const torch::Device device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU);
     agnews::LstmClassifier model(experiment.model);
     model->to(device);
 

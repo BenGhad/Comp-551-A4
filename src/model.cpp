@@ -103,11 +103,26 @@ torch::Tensor LstmClassifierImpl::forward(const torch::Tensor& input_ids,
     if (input_ids.size(0) != lengths.size(0)) {
         throw std::runtime_error("Batch size mismatch between input_ids and lengths.");
     }
+    if (input_ids.size(1) <= 0) {
+        throw std::runtime_error("input_ids must contain at least one timestep.");
+    }
+
+    const auto lengths_cpu = lengths.to(torch::kCPU).contiguous();
+    const auto* lengths_ptr = lengths_cpu.data_ptr<int64_t>();
+    for (int64_t row = 0; row < lengths_cpu.size(0); ++row) {
+        const int64_t length = lengths_ptr[row];
+        if (length <= 0) {
+            throw std::runtime_error("All sequence lengths must be positive.");
+        }
+        if (length > input_ids.size(1)) {
+            throw std::runtime_error("Sequence length exceeds padded input width.");
+        }
+    }
 
     const auto embedded = embedding_->forward(input_ids);
     const auto packed = torch::nn::utils::rnn::pack_padded_sequence(
         embedded,
-        lengths.to(torch::kCPU),
+        lengths_cpu,
         true,
         false);
 
