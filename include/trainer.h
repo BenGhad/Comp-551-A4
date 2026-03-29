@@ -41,6 +41,11 @@ struct DatasetMetrics {
     double accuracy = 0.0;
 };
 
+struct PredictionReport {
+    DatasetMetrics metrics;
+    std::vector<int64_t> predicted_labels;
+};
+
 struct EpochMetrics {
     int epoch = 0;
     double training_loss = 0.0;
@@ -74,6 +79,11 @@ DatasetMetrics evaluate(LstmClassifier& model,
                         const std::vector<EncodedExample>& examples,
                         const TrainingConfig& config,
                         torch::Device device);
+
+PredictionReport evaluate_with_predictions(LstmClassifier& model,
+                                           const std::vector<EncodedExample>& examples,
+                                           const TrainingConfig& config,
+                                           torch::Device device);
 
 TrainingHistory fit(LstmClassifier& model,
                     const std::vector<EncodedExample>& train_examples,

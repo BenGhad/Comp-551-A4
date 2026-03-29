@@ -4,9 +4,11 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include <torch/nn/functional/loss.h>
@@ -18,6 +20,7 @@ namespace agnews {
             torch::Tensor input_ids;
             torch::Tensor lengths;
             torch::Tensor labels;
+            std::vector<size_t> example_indices;
             int64_t size = 0;
         };
 
@@ -66,6 +69,7 @@ namespace agnews {
                 input_ids.to(device),
                 lengths.to(device),
                 labels.to(device),
+                std::move(batch_indices),
                 static_cast<int64_t>(batch_indices.size())
             };
         }
@@ -91,12 +95,21 @@ namespace agnews {
                                  const std::vector<EncodedExample> &examples,
                                  const TrainingConfig &config,
                                  const torch::Device device,
-                                 std::vector<size_t> order) {
+                                 std::vector<size_t> order,
+                                 std::vector<int64_t> *predicted_labels = nullptr) {
             if (examples.empty()) {
                 throw std::runtime_error("Cannot run training or evaluation on an empty dataset.");
             }
 
             const bool training = optimizer != nullptr;
+            if (training && predicted_labels != nullptr) {
+                throw std::runtime_error("Cannot collect predictions during training.");
+            }
+
+            if (predicted_labels != nullptr) {
+                predicted_labels->assign(examples.size(), -1);
+            }
+
             if (training) {
                 model->train();
             } else {
@@ -130,6 +143,13 @@ namespace agnews {
                 }
 
                 const auto predictions = logits.argmax(1);
+                if (predicted_labels != nullptr) {
+                    const auto predictions_cpu = predictions.to(torch::kCPU).contiguous();
+                    const auto *prediction_ptr = predictions_cpu.data_ptr<int64_t>();
+                    for (size_t row = 0; row < batch.example_indices.size(); ++row) {
+                        (*predicted_labels)[batch.example_indices[row]] = prediction_ptr[row];
+                    }
+                }
                 total_correct += predictions.eq(batch.labels).sum().item<int64_t>();
                 total_loss += loss.item<double>() * static_cast<double>(batch.size);
                 total_examples += batch.size;
@@ -139,6 +159,39 @@ namespace agnews {
             metrics.loss = total_loss / static_cast<double>(total_examples);
             metrics.accuracy = static_cast<double>(total_correct) / static_cast<double>(total_examples);
             return metrics;
+        }
+
+        bool is_better_validation_epoch(const EpochMetrics &candidate,
+                                        const EpochMetrics *best) {
+            if (best == nullptr) {
+                return true;
+            }
+
+            if (candidate.validation_accuracy > best->validation_accuracy) {
+                return true;
+            }
+
+            return candidate.validation_accuracy == best->validation_accuracy &&
+                   candidate.validation_loss < best->validation_loss;
+        }
+
+        std::string serialize_model_state(LstmClassifier &model) {
+            torch::serialize::OutputArchive archive;
+            model->save(archive);
+
+            std::ostringstream buffer(std::ios::out | std::ios::binary);
+            archive.save_to(buffer);
+            return buffer.str();
+        }
+
+        void restore_model_state(LstmClassifier &model,
+                                 const std::string &serialized_state,
+                                 const torch::Device device) {
+            std::istringstream buffer(serialized_state, std::ios::in | std::ios::binary);
+            torch::serialize::InputArchive archive;
+            archive.load_from(buffer);
+            model->load(archive);
+            model->to(device);
         }
     } // namespace
 
@@ -260,6 +313,18 @@ namespace agnews {
         return run_epoch(model, nullptr, examples, config, device, std::move(order));
     }
 
+    PredictionReport evaluate_with_predictions(LstmClassifier &model,
+                                               const std::vector<EncodedExample> &examples,
+                                               const TrainingConfig &config,
+                                               const torch::Device device) {
+        std::vector<size_t> order(examples.size());
+        std::iota(order.begin(), order.end(), 0);
+
+        PredictionReport report;
+        report.metrics = run_epoch(model, nullptr, examples, config, device, std::move(order), &report.predicted_labels);
+        return report;
+    }
+
     TrainingHistory fit(LstmClassifier &model,
                         const std::vector<EncodedExample> &train_examples,
                         const std::vector<EncodedExample> &valid_examples,
@@ -276,6 +341,8 @@ namespace agnews {
         std::mt19937 rng(42);
 
         TrainingHistory history;
+        std::string best_model_state;
+        std::optional<EpochMetrics> best_epoch_metrics;
         for (int epoch = 1; epoch <= config.training.epochs; ++epoch) {
             const auto train_metrics = train_epoch(
                 model,
@@ -298,7 +365,16 @@ namespace agnews {
             epoch_metrics.validation_accuracy = valid_metrics.accuracy;
 
             std::cout << epoch_metrics.summary() << std::endl;
+            if (is_better_validation_epoch(epoch_metrics,
+                                           best_epoch_metrics.has_value() ? &best_epoch_metrics.value() : nullptr)) {
+                best_model_state = serialize_model_state(model);
+                best_epoch_metrics = epoch_metrics;
+            }
             history.add(std::move(epoch_metrics));
+        }
+
+        if (!best_model_state.empty()) {
+            restore_model_state(model, best_model_state, device);
         }
 
         return history;
