@@ -18,10 +18,10 @@ enum class OptimizerType {
 };
 
 struct TrainingConfig {
-    size_t max_sequence_length = 64;
+    size_t max_sequence_length = 128;
     OptimizerType optimizer = OptimizerType::Adam;
     double learning_rate = 1e-3;
-    size_t batch_size = 128;
+    size_t batch_size = 64;
     int epochs = 6;
     double max_gradient_norm = 1.0;
 

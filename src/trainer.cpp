@@ -1,6 +1,7 @@
 #include "trainer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -16,6 +17,40 @@
 
 namespace agnews {
     namespace {
+        bool tensor_is_finite(const torch::Tensor& tensor) {
+            return torch::isfinite(tensor).all().item<bool>();
+        }
+
+        void require_finite_tensor(const torch::Tensor& tensor,
+                                   const std::string& tensor_name,
+                                   const bool training,
+                                   const size_t batch_start) {
+            if (tensor_is_finite(tensor)) {
+                return;
+            }
+
+            std::ostringstream message;
+            message << "Non-finite values detected in " << tensor_name
+                    << " during " << (training ? "training" : "evaluation")
+                    << " at batch starting index " << batch_start << ".";
+            throw std::runtime_error(message.str());
+        }
+
+        void require_finite_scalar(const double value,
+                                   const std::string& value_name,
+                                   const bool training,
+                                   const size_t batch_start) {
+            if (std::isfinite(value)) {
+                return;
+            }
+
+            std::ostringstream message;
+            message << "Non-finite value detected in " << value_name
+                    << " during " << (training ? "training" : "evaluation")
+                    << " at batch starting index " << batch_start << ".";
+            throw std::runtime_error(message.str());
+        }
+
         struct TensorBatch {
             torch::Tensor input_ids;
             torch::Tensor lengths;
@@ -134,11 +169,16 @@ namespace agnews {
                 }
 
                 const auto logits = model->forward(batch.input_ids, batch.lengths);
+                require_finite_tensor(logits, "logits", training, start);
                 const auto loss = torch::nn::functional::cross_entropy(logits, batch.labels);
+                require_finite_tensor(loss, "loss", training, start);
 
                 if (training) {
                     loss.backward();
-                    torch::nn::utils::clip_grad_norm_(model->parameters(), config.max_gradient_norm);
+                    const auto gradient_norm = torch::nn::utils::clip_grad_norm_(
+                        model->parameters(),
+                        config.max_gradient_norm);
+                    require_finite_scalar(gradient_norm, "gradient norm", training, start);
                     optimizer->step();
                 }
 
